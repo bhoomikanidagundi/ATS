@@ -13,7 +13,7 @@ export default function Landing() {
       {/* Navbar */}
       <nav className="container mx-auto px-6 py-6 flex items-center justify-between relative z-10">
         <div className="flex items-center">
-          <span className="text-xl font-black tracking-tighter text-indigo-600 dark:text-indigo-400 uppercase">ScanFlow</span>
+          <span className="text-xl font-black tracking-tighter text-indigo-600 dark:text-indigo-400 uppercase">Shortlistify</span>
         </div>
         <div className="flex items-center space-x-6">
           <ThemeToggle />

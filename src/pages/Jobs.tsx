@@ -10,6 +10,7 @@ interface Job {
   description: string;
   required_skills: string[];
   experience_required: string;
+  location: string;
   created_at: string;
 }
 
@@ -88,7 +89,7 @@ export default function Jobs() {
         setTimeout(() => navigate('/applications'), 1500);
       } else {
         const data = await res.json();
-        setErrorMessage(data.error || "Failed to apply.");
+        setErrorMessage(data.details || data.error || "Failed to apply.");
       }
     } catch (e) {
       setErrorMessage("Something went wrong. Please try again.");
@@ -176,7 +177,7 @@ export default function Jobs() {
                       <Briefcase className="w-4 h-4" /> Full-Time
                     </span>
                     <span className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-xl">
-                      <MapPin className="w-4 h-4" /> Remote
+                      <MapPin className="w-4 h-4" /> {job.location || 'Remote'}
                     </span>
                     <span className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-xl">
                       <DollarSign className="w-4 h-4" /> Competitive

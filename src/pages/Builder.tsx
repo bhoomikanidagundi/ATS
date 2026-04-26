@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
 import { Loader2, Plus, Trash2, Wand2 } from 'lucide-react';
@@ -19,6 +19,34 @@ export default function Builder() {
   const [projects, setProjects] = useState([{ name: '', technologies: '', date: '', description: '' }]);
   const [skills, setSkills] = useState({ languages: '', frameworks: '', tools: '' });
   const [jobDescription, setJobDescription] = useState('');
+  const [showSavedToast, setShowSavedToast] = useState(false);
+
+  // Load from LocalStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('builder_draft');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.personal) setPersonal(parsed.personal);
+        if (parsed.experience) setExperience(parsed.experience);
+        if (parsed.education) setEducation(parsed.education);
+        if (parsed.projects) setProjects(parsed.projects);
+        if (parsed.skills) setSkills(parsed.skills);
+        if (parsed.jobDescription) setJobDescription(parsed.jobDescription);
+      } catch (e) { console.error("Draft load error", e); }
+    }
+  }, []);
+
+  // Save to LocalStorage
+  useEffect(() => {
+    const draft = { personal, experience, education, projects, skills, jobDescription };
+    localStorage.setItem('builder_draft', JSON.stringify(draft));
+    
+    // Show a subtle saved indicator
+    setShowSavedToast(true);
+    const timer = setTimeout(() => setShowSavedToast(false), 2000);
+    return () => clearTimeout(timer);
+  }, [personal, experience, education, projects, skills, jobDescription]);
 
   const handleBuild = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,6 +96,7 @@ export default function Builder() {
       }
 
       const data = await response.json();
+      localStorage.removeItem('builder_draft'); // Clear on success
       navigate(`/resume/${data.id}`);
     } catch (err: any) {
       setError(err.message || 'An error occurred while building the resume.');
@@ -97,6 +126,13 @@ export default function Builder() {
       <header className="mb-8">
         <h2 className="text-4xl sm:text-5xl font-black tracking-tight text-slate-900 dark:text-white leading-none mb-2 transition-colors">AI Resume Builder</h2>
         <p className="text-slate-500 dark:text-slate-400 font-medium">Provide your raw details, and our AI will craft a perfectly ATS-optimized resume.</p>
+        <div className={cn(
+          "mt-2 inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all duration-500",
+          showSavedToast ? "text-emerald-500 opacity-100 translate-y-0" : "text-slate-300 dark:text-slate-800 opacity-0 -translate-y-1"
+        )}>
+          <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+          Draft saved automatically
+        </div>
       </header>
 
       {error && (

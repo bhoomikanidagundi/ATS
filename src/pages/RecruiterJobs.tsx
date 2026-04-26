@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
 import { 
   Briefcase, Plus, Search, Loader2, MapPin, 
@@ -13,24 +14,53 @@ interface Job {
   description: string;
   required_skills: string[];
   experience_required: string;
+  location: string;
   created_at: string;
   applicant_count?: number;
 }
 
 export default function RecruiterJobs() {
   const { token } = useAuth();
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingJobId, setEditingJobId] = useState<string | null>(null);
 
   // Form State
   const [newJob, setNewJob] = useState({
     title: '',
     description: '',
     required_skills: '',
-    experience_required: ''
+    experience_required: '',
+    work_type: 'Remote',
+    specific_location: '',
+    salary: ''
   });
+  const [showDraftSaved, setShowDraftSaved] = useState(false);
+
+  // Load Draft
+  useEffect(() => {
+    const saved = localStorage.getItem('job_creation_draft');
+    if (saved) {
+      try {
+        setNewJob(JSON.parse(saved));
+      } catch (e) { console.error("Job draft load error", e); }
+    }
+  }, []);
+
+  // Save Draft
+  useEffect(() => {
+    // Only save if some content exists
+    if (newJob.title || newJob.description) {
+      localStorage.setItem('job_creation_draft', JSON.stringify(newJob));
+      setShowDraftSaved(true);
+      const timer = setTimeout(() => setShowDraftSaved(false), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [newJob]);
 
   useEffect(() => {
     const fetchJobs = async () => {
@@ -61,28 +91,76 @@ export default function RecruiterJobs() {
     fetchJobs();
   }, [token]);
 
-  const handleCreateJob = async (e: React.FormEvent) => {
+  const handleSubmitJob = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const apiUrl = import.meta.env.VITE_APP_URL || '';
-      const res = await fetch(`${apiUrl}/api/jobs`, {
-        method: 'POST',
+      const url = isEditing ? `${apiUrl}/api/jobs/${editingJobId}` : `${apiUrl}/api/jobs`;
+      const method = isEditing ? 'PUT' : 'POST';
+
+      const res = await fetch(url, {
+        method: method,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({
           ...newJob,
+          location: newJob.work_type === 'Remote' ? 'Remote' : `${newJob.work_type} (${newJob.specific_location})`,
           required_skills: newJob.required_skills.split(',').map(s => s.trim())
         })
       });
 
       if (res.ok) {
         setShowCreateModal(false);
-        setNewJob({ title: '', description: '', required_skills: '', experience_required: '' });
+        setIsEditing(false);
+        setEditingJobId(null);
+        setNewJob({ title: '', description: '', required_skills: '', experience_required: '', work_type: 'Remote', specific_location: '', salary: '' });
+        localStorage.removeItem('job_creation_draft'); // Clear draft on success
         // Refresh
         window.location.reload();
       }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleEditClick = (job: Job) => {
+    let work_type = 'Remote';
+    let specific_location = '';
+    
+    const loc = job.location || 'Remote';
+    if (loc.includes(' (')) {
+      const parts = loc.split(' (');
+      work_type = parts[0];
+      specific_location = parts[1].replace(')', '');
+    } else {
+      work_type = loc;
+    }
+
+    setNewJob({
+      title: job.title,
+      description: job.description,
+      required_skills: job.required_skills.join(', '),
+      experience_required: job.experience_required,
+      work_type: work_type as any,
+      specific_location: specific_location,
+      salary: (job as any).salary || ''
+    });
+    setEditingJobId(job.id);
+    setIsEditing(true);
+    setShowCreateModal(true);
+  };
+
+  const handleDeleteJob = async (jobId: string) => {
+    if (!window.confirm("Are you sure you want to delete this job?")) return;
+    try {
+      const apiUrl = import.meta.env.VITE_APP_URL || '';
+      const res = await fetch(`${apiUrl}/api/jobs/${jobId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) window.location.reload();
     } catch (e) {
       console.error(e);
     }
@@ -108,7 +186,12 @@ export default function RecruiterJobs() {
           <p className="text-slate-500 font-medium mt-2 text-lg">Create and manage your organization's open positions.</p>
         </div>
         <button 
-          onClick={() => setShowCreateModal(true)}
+          onClick={() => {
+            setIsEditing(false);
+            setEditingJobId(null);
+            setNewJob({ title: '', description: '', required_skills: '', experience_required: '', work_type: 'Remote', specific_location: '', salary: '' });
+            setShowCreateModal(true);
+          }}
           className="px-8 py-4 bg-slate-900 dark:bg-indigo-600 text-white font-black rounded-2xl hover:bg-indigo-600 dark:hover:bg-indigo-500 transition-all uppercase tracking-widest text-xs flex items-center gap-2 shadow-[8px_8px_0px_0px_rgba(15,23,42,1)] dark:shadow-[8px_8px_0px_0px_rgba(49,46,129,0.5)] active:translate-x-1 active:translate-y-1 active:shadow-none"
         >
           <Plus className="w-5 h-5" /> Create New Job
@@ -150,19 +233,33 @@ export default function RecruiterJobs() {
                     <Calendar className="w-3 h-3" /> {new Date(job.created_at).toLocaleDateString()}
                   </span>
                 </div>
-                <div className="flex gap-2">
-                  <button className="p-2 text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors">
+                <div className="flex gap-2 relative z-10">
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEditClick(job);
+                    }}
+                    className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                    title="Edit Job"
+                  >
                     <Edit className="w-4 h-4" />
                   </button>
-                  <button className="p-2 text-slate-400 hover:text-rose-500 transition-colors">
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteJob(job.id);
+                    }}
+                    className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-400 hover:text-rose-500 hover:bg-white dark:hover:bg-slate-700 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                    title="Delete Job"
+                  >
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
               </div>
 
               <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-2 tracking-tight group-hover:text-indigo-600 transition-colors">{job.title}</h3>
-              <div className="flex items-center gap-4 text-xs font-bold text-slate-500 mb-6">
-                 <span className="flex items-center gap-1"><MapPin className="w-3 h-3" /> Remote</span>
+               <div className="flex items-center gap-4 text-xs font-bold text-slate-500 mb-6">
+                 <span className="flex items-center gap-1"><MapPin className="w-3 h-3" /> {job.location || 'Remote'}</span>
                  <span className="flex items-center gap-1"><Users className="w-3 h-3" /> {job.applicant_count} Applicants</span>
               </div>
 
@@ -181,7 +278,10 @@ export default function RecruiterJobs() {
                     +{Math.max(0, (job.applicant_count || 0) - 3)}
                   </div>
                 </div>
-                <button className="flex items-center gap-2 text-xs font-black text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 transition-colors uppercase tracking-widest">
+                <button 
+                  onClick={() => navigate(`/recruiter-candidates?job_id=${job.id}`)}
+                  className="flex items-center gap-2 text-xs font-black text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 transition-colors uppercase tracking-widest"
+                >
                   View Pipeline <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
@@ -194,10 +294,21 @@ export default function RecruiterJobs() {
       {showCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white dark:bg-slate-900 border-4 border-slate-900 dark:border-slate-800 rounded-[40px] p-8 w-full max-w-2xl shadow-[16px_16px_0px_0px_rgba(15,23,42,1)] animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
-            <h3 className="text-3xl font-black text-slate-900 dark:text-white uppercase mb-2 tracking-tight">Create New Position</h3>
-            <p className="text-slate-500 font-medium mb-8">Define the role and target skills to find the perfect match.</p>
+            <h3 className="text-3xl font-black text-slate-900 dark:text-white uppercase mb-2 tracking-tight">
+              {isEditing ? 'Edit Position' : 'Create New Position'}
+            </h3>
+            <p className="text-slate-500 font-medium mb-1">
+              {isEditing ? 'Update the details of this role.' : 'Define the role and target skills to find the perfect match.'}
+            </p>
+            <div className={cn(
+              "mb-8 flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-opacity duration-500",
+              showDraftSaved ? "text-emerald-500 opacity-100" : "text-transparent opacity-0"
+            )}>
+              <div className="w-1 h-1 bg-emerald-500 rounded-full animate-pulse" />
+              Draft Saved
+            </div>
             
-            <form onSubmit={handleCreateJob} className="space-y-6">
+            <form onSubmit={handleSubmitJob} className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Job Title</label>
@@ -221,7 +332,53 @@ export default function RecruiterJobs() {
                     onChange={(e) => setNewJob({...newJob, experience_required: e.target.value})}
                   />
                 </div>
+                <div>
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Annual Salary (RS.)</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. 15,00,000"
+                    className="w-full bg-slate-50 dark:bg-slate-950 border-2 border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-4 text-slate-900 dark:text-white font-bold focus:outline-none focus:border-indigo-500"
+                    value={newJob.salary}
+                    onChange={(e) => setNewJob({...newJob, salary: e.target.value})}
+                  />
+                  <p className="text-[8px] font-bold text-slate-400 mt-1 uppercase tracking-tighter">* This is only visible to you, not candidates.</p>
+                </div>
               </div>
+
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Work Type</label>
+                <div className="flex gap-4">
+                  {['Remote', 'Hybrid', 'On-site'].map((loc) => (
+                    <button
+                      key={loc}
+                      type="button"
+                      onClick={() => setNewJob({...newJob, work_type: loc as any})}
+                      className={cn(
+                        "flex-1 py-3 px-4 rounded-xl font-bold text-sm transition-all border-2",
+                        newJob.work_type === loc 
+                          ? "bg-indigo-600 border-indigo-600 text-white shadow-[4px_4px_0px_0px_rgba(49,46,129,1)]" 
+                          : "bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 hover:border-indigo-200"
+                      )}
+                    >
+                      {loc}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {newJob.work_type !== 'Remote' && (
+                <div className="animate-in fade-in slide-in-from-top-2 duration-200">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Specific Location (City)</label>
+                  <input 
+                    type="text" 
+                    required
+                    placeholder="e.g. Mumbai, Maharashtra"
+                    className="w-full bg-slate-50 dark:bg-slate-950 border-2 border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-4 text-slate-900 dark:text-white font-bold focus:outline-none focus:border-indigo-500"
+                    value={newJob.specific_location}
+                    onChange={(e) => setNewJob({...newJob, specific_location: e.target.value})}
+                  />
+                </div>
+              )}
 
               <div>
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Job Description</label>
@@ -259,7 +416,7 @@ export default function RecruiterJobs() {
                   type="submit"
                   className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-indigo-700 shadow-[4px_4px_0px_0px_rgba(49,46,129,1)] transition-all flex items-center justify-center gap-2"
                 >
-                  Post Job
+                  {isEditing ? 'Save Changes' : 'Post Job'}
                 </button>
               </div>
             </form>

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
 import { UploadCloud, File, X, Loader2, Info, ArrowRight } from 'lucide-react';
@@ -10,8 +10,25 @@ export default function Upload() {
   const [isDragActive, setIsDragActive] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState('');
+  const [showSaved, setShowSaved] = useState(false);
   const { token } = useAuth();
   const navigate = useNavigate();
+
+  // Load Draft
+  useEffect(() => {
+    const saved = localStorage.getItem('upload_jd_draft');
+    if (saved) setJobDescription(saved);
+  }, []);
+
+  // Save Draft
+  useEffect(() => {
+    if (jobDescription) {
+      localStorage.setItem('upload_jd_draft', jobDescription);
+      setShowSaved(true);
+      const timer = setTimeout(() => setShowSaved(false), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [jobDescription]);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -87,6 +104,7 @@ export default function Upload() {
         throw new Error(data.error || 'Upload failed');
       }
 
+      localStorage.removeItem('upload_jd_draft'); // Clear draft
       navigate(`/result/${data.id}`);
     } catch (err: any) {
       setError(err.message);
@@ -99,6 +117,13 @@ export default function Upload() {
       <header className="mb-8">
         <h2 className="text-4xl sm:text-5xl font-black tracking-tight text-slate-900 dark:text-white leading-none mb-2 transition-colors">Upload Resume</h2>
         <p className="text-slate-500 font-medium">Get your resume scored and optimized in seconds.</p>
+        <div className={cn(
+          "mt-2 inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-opacity duration-500",
+          showSaved ? "text-emerald-500 opacity-100" : "text-transparent opacity-0"
+        )}>
+          <div className="w-1 h-1 bg-emerald-500 rounded-full animate-pulse" />
+          Draft Saved
+        </div>
       </header>
 
       <div className="grid md:grid-cols-2 gap-8">

@@ -20,12 +20,15 @@ export default function DashboardLayout() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex font-sans text-slate-900 dark:text-slate-100 transition-colors">
-      {/* Sidebar */}
-      <aside className="w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col hidden md:flex p-6 justify-between transition-colors">
+      {/* Mobile Sidebar Trigger (Optional, but let's make it a persistent sidebar or drawer) */}
+      {/* For now, I'll make the sidebar always visible on mobile or a drawer. Let's do a permanent mini-sidebar or drawer. */}
+      {/* Let's go with a persistent drawer/sidebar on the left for mobile too. */}
+      
+      <aside className="w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col fixed md:sticky top-0 left-0 h-screen p-6 justify-between transition-all z-50 -translate-x-full md:translate-x-0 peer-checked:translate-x-0">
         <div className="space-y-8">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-xl font-black tracking-tighter text-indigo-600 dark:text-indigo-400 uppercase">ScanFlow</h1>
+              <h1 className="text-xl font-black tracking-tighter text-indigo-600 dark:text-indigo-400 uppercase">Shortlistify</h1>
               <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 tracking-widest uppercase mt-1">ATS Optimization Suite</p>
             </div>
             <ThemeToggle />
@@ -67,37 +70,23 @@ export default function DashboardLayout() {
       </aside>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden relative">
         <header className="md:hidden bg-white dark:bg-slate-900 h-16 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 transition-colors">
-          <span className="text-xl font-black tracking-tighter text-indigo-600 dark:text-indigo-400 uppercase">ScanFlow</span>
+          <div className="flex items-center gap-3">
+            <label htmlFor="nav-toggle" className="p-2 -ml-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 cursor-pointer">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+            </label>
+            <span className="text-xl font-black tracking-tighter text-indigo-600 dark:text-indigo-400 uppercase">Shortlistify</span>
+          </div>
           <ThemeToggle />
         </header>
         
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-10 flex flex-col gap-8 transition-colors pb-20 md:pb-4">
+        <input type="checkbox" id="nav-toggle" className="hidden peer" />
+        <label htmlFor="nav-toggle" className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40 hidden peer-checked:block md:hidden" />
+
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-10 flex flex-col gap-8 transition-colors">
           <Outlet />
         </main>
-
-        {/* Mobile Bottom Navigation */}
-        <nav className="md:hidden bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex justify-around items-center p-2 transition-colors absolute bottom-0 left-0 right-0 z-50">
-          {navItems.map((item) => {
-            const isActive = location.pathname.startsWith(item.href) || location.pathname === item.href;
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
-                className={cn(
-                  "flex flex-col items-center gap-1 p-2 text-[10px] transition-all",
-                  isActive 
-                    ? "text-indigo-600 dark:text-indigo-400 font-bold" 
-                    : "text-slate-500 dark:text-slate-400 font-medium"
-                )}
-              >
-                <item.icon className="w-5 h-5" />
-                <span>{item.name.split(' ')[0]}</span>
-              </Link>
-            )
-          })}
-        </nav>
       </div>
     </div>
   );

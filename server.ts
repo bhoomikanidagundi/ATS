@@ -12,7 +12,7 @@ import jwt from "jsonwebtoken";
 import cors from "cors";
 import mysql from "mysql2/promise";
 import fs from "fs/promises";
-import { authMiddleware, allowRoles } from "./middleware/auth";
+import { authMiddleware, allowRoles } from "./middleware/auth.ts";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
@@ -44,6 +44,19 @@ const diskStorage = multer.diskStorage({
   }
 });
 const diskUpload = multer({ storage: diskStorage });
+
+// Helper to extract text from PDF buffer
+async function extractTextFromPDF(buffer: Buffer): Promise<string> {
+  try {
+    const parser = new PDFParse({ data: buffer });
+    const result = await parser.getText();
+    await parser.destroy();
+    return result.text || "";
+  } catch (err) {
+    console.error("PDF Extraction Error:", err);
+    return "";
+  }
+}
 
 // --- Initialize Database ---
 const initializeDB = async () => {
@@ -147,6 +160,26 @@ const initializeDB = async () => {
     } catch (e: any) {
       if (e.code !== 'ER_DUP_FIELDNAME') {
         console.log("Note: resumes columns check:", e.message);
+      }
+    }
+
+    try {
+      await pool.query("ALTER TABLE jobs ADD COLUMN location VARCHAR(100) DEFAULT 'Remote'");
+      await pool.query("ALTER TABLE jobs ADD COLUMN salary VARCHAR(100)");
+    } catch (e: any) {
+      if (e.code !== 'ER_DUP_FIELDNAME') {
+        console.log("Note: jobs columns check:", e.message);
+      }
+    }
+
+    try {
+      await pool.query("ALTER TABLE resumes ADD COLUMN current_location VARCHAR(255)");
+      await pool.query("ALTER TABLE resumes ADD COLUMN notice_period VARCHAR(100)");
+      await pool.query("ALTER TABLE resumes ADD COLUMN total_experience VARCHAR(100)");
+      await pool.query("ALTER TABLE resumes ADD COLUMN current_salary VARCHAR(100)");
+    } catch (e: any) {
+      if (e.code !== 'ER_DUP_FIELDNAME') {
+        console.log("Note: resumes extended columns check:", e.message);
       }
     }
 
@@ -311,7 +344,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
 // --- ATS Engine Details ---
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-app.post("/api/analyze", authMiddleware, allowRoles("candidate"), upload.single("resume"), async (req: any, res) => {
+app.post("/api/analyze", authMiddleware, allowRoles("candidate"), diskUpload.single("resume"), async (req: any, res) => {
   try {
     const userId = req.userId;
     const file = req.file;
@@ -321,13 +354,16 @@ app.post("/api/analyze", authMiddleware, allowRoles("candidate"), upload.single(
 
     // Parse PDF
     let resumeText = "";
-    if (file.mimetype === "application/pdf") {
-      const parser = new PDFParse({ data: file.buffer });
-      const parseResult = await parser.getText();
-      resumeText = parseResult.text;
-      await parser.destroy();
-    } else {
-      resumeText = file.buffer.toString("utf-8");
+    try {
+      const buffer = await fs.readFile(file.path);
+      if (file.mimetype === "application/pdf") {
+        resumeText = await extractTextFromPDF(buffer);
+      } else {
+        resumeText = buffer.toString("utf-8");
+      }
+    } catch (err) {
+      console.error("File Read Error:", err);
+      return res.status(500).json({ error: "Failed to read uploaded file" });
     }
 
     if (!resumeText || resumeText.trim() === "") {
@@ -337,33 +373,43 @@ app.post("/api/analyze", authMiddleware, allowRoles("candidate"), upload.single(
     const prompt = `
     You are an expert ATS (Applicant Tracking System) and Senior Recruiter.
     Analyze the following resume text. If a job description is provided, score the resume against it.
-    Provide a detailed analysis output in valid JSON format ONLY, without markdown wrapping.
+    Also, extract structured professional details for the candidate profile.
+    Provide the output in valid JSON format ONLY, without markdown wrapping.
 
     Schema:
     {
-      "score": <number between 0 and 100>,
-      "keywordMatch": <number between 0 and 100>,
-      "formattingIssues": ["<issue 1>", "<issue 2>"],
-      "sectionCompleteness": ["<missing or incomplete section>", ...],
-      "skillRelevance": <number between 0 and 100>,
-      "missingKeywords": ["<keyword 1>", "<keyword 2>"],
-      "skillSuggestions": ["<suggestion 1: Add skills like X to improve match>", "<suggestion 2>", ...],
-      "suggestions": [
-        { "section": "<section>", "tip": "<improvement tip>", "example": "<better example phrasing>" }
-      ],
-      "bulletRewrites": [
-        { "original": "<original text>", "rewritten": "<better version>" }
-      ],
-      "summary": "<Short executive summary of the resume's quality>"
+      "analysis": {
+        "score": <number 0-100>,
+        "keywordMatch": <number 0-100>,
+        "formattingIssues": ["<issue 1>", "<issue 2>"],
+        "sectionCompleteness": ["<missing section>", ...],
+        "skillRelevance": <number 0-100>,
+        "missingKeywords": ["<keyword 1>", "<keyword 2>"],
+        "skillSuggestions": ["<suggestion 1>", "<suggestion 2>", ...],
+        "suggestions": [
+          { "section": "<section>", "tip": "<tip>", "example": "<example>" }
+        ],
+        "bulletRewrites": [
+          { "original": "<original>", "rewritten": "<better>" }
+        ],
+        "summary": "<Short executive summary>"
+      },
+      "structuredData": {
+        "skills": ["<skill 1>", "<skill 2>"],
+        "education": [{"degree": "<degree>", "institution": "<institution>", "year": "<year>"}],
+        "experience": [{"title": "<title>", "company": "<company>", "duration": "<duration>"}],
+        "current_location": "<city, state>",
+        "notice_period": "<notice period>",
+        "total_experience": "<total exp>",
+        "current_salary": "<salary>"
+      }
     }
-
-    Specific Goal: Compare the resume's skills with the Job Description's required skills. List any missing critical skills in "missingKeywords" and provide actionable sentences in "skillSuggestions".
 
     Job Description (if empty, assume general best practices):
     ${jobDescription}
 
     Resume Text:
-    ${resumeText.substring(0, 8000)} // Truncate if extremely long to avoid token limits
+    ${resumeText.substring(0, 8000)}
     `;
 
     const response = await ai.models.generateContent({
@@ -380,20 +426,37 @@ app.post("/api/analyze", authMiddleware, allowRoles("candidate"), upload.single(
     }
 
     // Attempt parse
-    let analysisData;
+    let fullResult;
     try {
-      analysisData = JSON.parse(resultText);
+      fullResult = JSON.parse(resultText);
     } catch (parseError) {
       console.error("Failed to parse Gemini response as JSON", parseError, resultText);
       return res.status(500).json({ error: "Invalid analysis response format. Please try again." });
     }
 
+    const analysisData = fullResult.analysis || fullResult; // Fallback if AI skips wrapping
+    const structuredData = fullResult.structuredData || {};
+
     // Save to DB
     const resumeId = Date.now().toString();
     const uploadedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    
     await pool.query(
-      "INSERT INTO resumes (id, userId, filename, uploadedAt) VALUES (?, ?, ?, ?)",
-      [resumeId, userId, file.originalname, uploadedAt]
+      "INSERT INTO resumes (id, userId, filename, file_path, uploadedAt, parsed_skills, parsed_education, parsed_experience, current_location, notice_period, total_experience, current_salary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        resumeId, 
+        userId, 
+        file.originalname, 
+        file.path, 
+        uploadedAt,
+        JSON.stringify(structuredData.skills || []),
+        JSON.stringify(structuredData.education || []),
+        JSON.stringify(structuredData.experience || []),
+        structuredData.current_location || "",
+        structuredData.notice_period || "",
+        structuredData.total_experience || "",
+        structuredData.current_salary || ""
+      ]
     );
 
     const analysisId = (Date.now() + 1).toString();
@@ -423,10 +486,7 @@ app.post("/api/analyze-resume", authMiddleware, upload.single("resume"), async (
     if (!req.file) return res.status(400).json({ error: "No resume file provided" });
 
     // 1. Extract Text
-    const parser = new PDFParse({ data: req.file.buffer });
-    const parseResult = await parser.getText();
-    const resumeText = parseResult.text;
-    await parser.destroy();
+    const resumeText = await extractTextFromPDF(req.file.buffer);
 
     // 2. AI Parsing
     const prompt = `
@@ -618,11 +678,11 @@ app.get("/api/history", authMiddleware, async (req: any, res) => {
 // ==========================================
 app.post("/api/jobs", authMiddleware, allowRoles("recruiter"), async (req: any, res) => {
   try {
-    const { title, description, required_skills, experience_required } = req.body;
+    const { title, description, required_skills, experience_required, location = "Remote", salary } = req.body;
     const jobId = Date.now().toString();
     await pool.query(
-      "INSERT INTO jobs (id, recruiter_id, title, description, required_skills, experience_required) VALUES (?, ?, ?, ?, ?, ?)",
-      [jobId, req.userId, title, description, JSON.stringify(required_skills || []), experience_required]
+      "INSERT INTO jobs (id, recruiter_id, title, description, required_skills, experience_required, location, salary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [jobId, req.userId, title, description, JSON.stringify(required_skills || []), experience_required, location, salary]
     );
     res.json({ id: jobId, message: "Job created successfully" });
   } catch (error) {
@@ -662,14 +722,53 @@ app.get("/api/jobs/:id", authMiddleware, async (req: any, res) => {
 
 app.put("/api/jobs/:id", authMiddleware, allowRoles("recruiter"), async (req: any, res) => {
   try {
-    const { title, description, required_skills, experience_required } = req.body;
+    const { title, description, required_skills, experience_required, location, salary } = req.body;
     await pool.query(
-      "UPDATE jobs SET title = ?, description = ?, required_skills = ?, experience_required = ? WHERE id = ? AND recruiter_id = ?",
-      [title, description, JSON.stringify(required_skills || []), experience_required, req.params.id, req.userId]
+      "UPDATE jobs SET title = ?, description = ?, required_skills = ?, experience_required = ?, location = ?, salary = ? WHERE id = ? AND recruiter_id = ?",
+      [title, description, JSON.stringify(required_skills || []), experience_required, location, salary, req.params.id, req.userId]
     );
     res.json({ message: "Job updated successfully" });
   } catch (error) {
     res.status(500).json({ error: "Failed to update job" });
+  }
+});
+
+app.delete("/api/jobs/:id", authMiddleware, allowRoles("recruiter"), async (req: any, res) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const jobId = req.params.id;
+    const recruiterId = req.userId;
+
+    // Check if job exists and belongs to recruiter
+    const [jobs] = await connection.query<any[]>("SELECT id FROM jobs WHERE id = ? AND recruiter_id = ?", [jobId, recruiterId]);
+    if (jobs.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: "Job not found or unauthorized" });
+    }
+
+    // 1. Get applications for this job
+    const [apps] = await connection.query<any[]>("SELECT id FROM applications WHERE job_id = ?", [jobId]);
+    const appIds = apps.map(a => a.id);
+
+    if (appIds.length > 0) {
+      // 2. Delete interviews for these applications
+      await connection.query("DELETE FROM interviews WHERE application_id IN (?)", [appIds]);
+      // 3. Delete applications
+      await connection.query("DELETE FROM applications WHERE job_id = ?", [jobId]);
+    }
+
+    // 4. Delete job
+    await connection.query("DELETE FROM jobs WHERE id = ? AND recruiter_id = ?", [jobId, recruiterId]);
+
+    await connection.commit();
+    res.json({ message: "Job deleted successfully" });
+  } catch (error: any) {
+    await connection.rollback();
+    console.error("Delete job error:", error);
+    res.status(500).json({ error: "Failed to delete job: " + error.message });
+  } finally {
+    connection.release();
   }
 });
 
@@ -681,7 +780,8 @@ app.get("/api/candidatesByJob", authMiddleware, allowRoles("recruiter"), async (
     const [candidates] = await pool.query<any[]>(
       `SELECT a.id as application_id, a.status, a.match_score, a.applied_at, 
               u.id as user_id, u.name, u.email, 
-              r.filename as resume_filename
+              r.filename as resume_filename, r.parsed_skills, r.parsed_education, r.parsed_experience,
+              r.current_location, r.notice_period, r.total_experience, r.current_salary
        FROM applications a 
        JOIN users u ON a.user_id = u.id 
        JOIN resumes r ON a.resume_id = r.id
@@ -719,10 +819,7 @@ app.post("/api/upload-resume", authMiddleware, allowRoles("candidate"), diskUplo
 
     // 1. Extract Text for AI Parsing
     const buffer = await fs.readFile(file.path);
-    const parser = new PDFParse({ data: buffer });
-    const parseResult = await parser.getText();
-    const resumeText = parseResult.text;
-    await parser.destroy();
+    const resumeText = await extractTextFromPDF(buffer);
 
     // 2. AI Parsing for Structured Data
     const prompt = `
@@ -731,7 +828,11 @@ app.post("/api/upload-resume", authMiddleware, allowRoles("candidate"), diskUplo
     {
       "skills": ["<skill 1>", "<skill 2>"],
       "education": [{"degree": "<degree>", "institution": "<institution>", "year": "<year>"}],
-      "experience": [{"title": "<title>", "company": "<company>", "duration": "<duration>"}]
+      "experience": [{"title": "<title>", "company": "<company>", "duration": "<duration>"}],
+      "current_location": "<city, state>",
+      "notice_period": "<e.g. 30 days, Immediate>",
+      "total_experience": "<e.g. 5 years>",
+      "current_salary": "<e.g. 12 LPA, 80k/month>"
     }
     
     Resume Text: ${resumeText.substring(0, 8000)}
@@ -751,7 +852,7 @@ app.post("/api/upload-resume", authMiddleware, allowRoles("candidate"), diskUplo
     const uploadedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
     await pool.query(
-      "INSERT INTO resumes (id, userId, filename, file_path, uploadedAt, parsed_skills, parsed_education, parsed_experience) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO resumes (id, userId, filename, file_path, uploadedAt, parsed_skills, parsed_education, parsed_experience, current_location, notice_period, total_experience, current_salary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         resumeId, 
         req.userId, 
@@ -760,7 +861,11 @@ app.post("/api/upload-resume", authMiddleware, allowRoles("candidate"), diskUplo
         uploadedAt, 
         JSON.stringify(parsedData.skills || []), 
         JSON.stringify(parsedData.education || []), 
-        JSON.stringify(parsedData.experience || [])
+        JSON.stringify(parsedData.experience || []),
+        parsedData.current_location || "",
+        parsedData.notice_period || "",
+        parsedData.total_experience || "",
+        parsedData.current_salary || ""
       ]
     );
 
@@ -788,14 +893,39 @@ app.post("/api/applications", authMiddleware, allowRoles("candidate"), async (re
     // 2. Parse Resume
     let resumeText = "";
     if (resume.file_path) {
-      const buffer = await fs.readFile(resume.file_path);
-      const parser = new PDFParse({ data: buffer });
-      const parseResult = await parser.getText();
-      resumeText = parseResult.text;
-      await parser.destroy();
+      try {
+        console.log(`[Apply] Reading resume file: ${resume.file_path}`);
+        const buffer = await fs.readFile(resume.file_path);
+        resumeText = await extractTextFromPDF(buffer);
+        console.log(`[Apply] Successfully extracted ${resumeText.length} characters`);
+      } catch (err: any) {
+        console.error(`[Apply] PDF Parse Error for ${resume.file_path}:`, err);
+      }
     }
 
-    if (!resumeText) return res.status(400).json({ error: "Could not extract text from stored resume" });
+    if (!resumeText || resumeText.trim().length === 0) {
+      console.error(`[Apply] Text extraction failed for ${resume.file_path}. Path exists: ${!!resume.file_path}`);
+      return res.status(400).json({ 
+        error: "Could not extract text from stored resume",
+        details: resume.file_path 
+          ? "The system was unable to read the content of your saved PDF. This can happen if the file was deleted or is corrupted. Please try re-uploading your resume."
+          : "This resume was uploaded without a physical file record. Please upload your resume again using the 'Upload Resume' page."
+      });
+    }
+
+    // 2.5 Mandatory Keyword Check
+    const requiredSkills = typeof job.required_skills === 'string' ? JSON.parse(job.required_skills) : job.required_skills;
+    if (requiredSkills && requiredSkills.length > 0) {
+      const resumeTextLower = resumeText.toLowerCase();
+      const missingSkills = requiredSkills.filter((skill: string) => !resumeTextLower.includes(skill.toLowerCase()));
+      
+      if (missingSkills.length > 0) {
+        return res.status(400).json({ 
+          error: "Mandatory Keywords Missing", 
+          details: `Your resume does not contain the required skills for this role: ${missingSkills.join(', ')}` 
+        });
+      }
+    }
 
     // 3 & 4. AI Match Score Calculation
     const prompt = `
